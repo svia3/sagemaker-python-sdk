@@ -90,6 +90,7 @@ class LambdaStep(Step):
         outputs: Optional[List[LambdaOutput]] = None,
         cache_config: Optional[CacheConfig] = None,
         depends_on: Optional[List[Union[str, Step, StepCollection]]] = None,
+        is_final_step: Optional[bool] = False,
     ):
         """Constructs a LambdaStep.
 
@@ -107,6 +108,8 @@ class LambdaStep(Step):
             depends_on (List[Union[str, Step, StepCollection]]): A list of `Step`/`StepCollection`
                 names or `Step` instances or `StepCollection` instances that this `LambdaStep`
                 depends on.
+            is_final_step (bool) : Whether the step is a final step. If it is, this step is going to be
+                executed at the end of the execution, after all non-final steps finish.
         """
         super(LambdaStep, self).__init__(
             name, display_name, description, StepTypeEnum.LAMBDA, depends_on
@@ -126,6 +129,7 @@ class LambdaStep(Step):
 
         root_prop.__dict__["Outputs"] = property_dict
         self._properties = root_prop
+        self.is_final_step = is_final_step
 
     @property
     def arguments(self) -> RequestType:
@@ -142,6 +146,9 @@ class LambdaStep(Step):
         request_dict = super().to_request()
         if self.cache_config:
             request_dict.update(self.cache_config.config)
+
+        if self.is_final_step:
+            request_dict.update({"IsFinalStep": str(self.is_final_step)})
 
         function_arn = self._get_function_arn()
         request_dict["FunctionArn"] = function_arn

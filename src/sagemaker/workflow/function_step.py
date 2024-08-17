@@ -67,6 +67,7 @@ class _FunctionStep(ConfigurableRetryStep):
         func: Callable = None,
         func_args: tuple = (),
         func_kwargs: dict = None,
+        is_final_step: Optional[bool] = False,
         **kwargs,
     ):
         """Constructs a _FunctionStep
@@ -96,6 +97,8 @@ class _FunctionStep(ConfigurableRetryStep):
         self._func = func
         self._func_args = func_args
         self._func_kwargs = func_kwargs if func_kwargs is not None else dict()
+
+        self.is_final_step = is_final_step
 
         self._step_kwargs = kwargs
 
@@ -225,6 +228,10 @@ class _FunctionStep(ConfigurableRetryStep):
     def to_request(self) -> RequestType:
         """Gets the request structure for workflow service calls."""
         request_dict = super().to_request()
+
+        if self.is_final_step:
+            request_dict.update({"IsFinalStep": str(self.is_final_step)})
+
         return request_dict
 
 
@@ -381,6 +388,7 @@ def step(
     spark_config: "SparkConfig" = None,
     use_spot_instances: Union[bool, PipelineVariable] = False,
     max_wait_time_in_seconds: Optional[Union[int, PipelineVariable]] = None,
+    is_final_step: Optional[bool] = False,
 ):
     """Decorator for converting a python function to a pipeline step.
 
@@ -605,6 +613,7 @@ def step(
                 spark_config=spark_config,
                 use_spot_instances=use_spot_instances,
                 max_wait_time_in_seconds=max_wait_time_in_seconds,
+                is_final_step=is_final_step,
             )
 
             return _generate_delayed_return(

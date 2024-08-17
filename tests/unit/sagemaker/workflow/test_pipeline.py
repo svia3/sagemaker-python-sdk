@@ -21,7 +21,9 @@ import pytest
 from mock import Mock, call, patch
 from mock.mock import MagicMock
 
-from sagemaker import s3
+from sagemaker import s3, Processor
+from sagemaker.estimator import Estimator
+from sagemaker.lambda_helper import Lambda
 from sagemaker.remote_function.job import _JobSettings
 from sagemaker.session_settings import SessionSettings
 from sagemaker.workflow.condition_step import ConditionStep
@@ -29,6 +31,7 @@ from sagemaker.workflow.conditions import ConditionEquals
 from sagemaker.workflow.execution_variables import ExecutionVariables
 from sagemaker.workflow.function_step import DelayedReturn, step
 from sagemaker.workflow.functions import JsonGet, Join
+from sagemaker.workflow.lambda_step import LambdaStep
 from sagemaker.workflow.parameters import ParameterString
 from sagemaker.workflow.pipeline import (
     Pipeline,
@@ -41,6 +44,7 @@ from sagemaker.workflow.pipeline_experiment_config import (
     PipelineExperimentConfigProperties,
 )
 from sagemaker.workflow.step_collections import StepCollection
+from sagemaker.workflow.steps import ProcessingStep, TrainingStep, TransformStep
 from tests.unit.sagemaker.workflow.helpers import ordered, CustomStep, CustomFunctionStep
 from sagemaker.local.local_session import LocalSession
 from botocore.exceptions import ClientError
@@ -732,6 +736,155 @@ def test_pipeline_two_step(sagemaker_session_mock):
 
     adjacency_list = PipelineGraph.from_pipeline(pipeline).adjacency_list
     assert ordered(adjacency_list) == ordered({"MyStep1": ["MyStep2"], "MyStep2": []})
+
+
+def test_pipeline_create_with_final_step(sagemaker_session):
+    ROLE = "DummyRole"
+    IMAGE_URI = "fakeimage"
+    pipeline_role_arn = "arn:aws:iam::111111111111:role/ConfigRole"
+    sagemaker_session.sagemaker_config = {
+        "SchemaVersion": "1.0",
+        "SageMaker": {"Pipeline": {"RoleArn": pipeline_role_arn}},
+    }
+    sagemaker_session.sagemaker_client.describe_pipeline.return_value = {
+        "PipelineArn": "pipeline-arn"
+    }
+    sagemaker_session.settings = SessionSettings()
+    instance_type_parameter = ParameterString(name="InstanceType", default_value="c4.4xlarge")
+
+    parameter = ParameterString("MyStr")
+    processor = Processor(
+        image_uri=IMAGE_URI,
+        role=ROLE,
+        instance_count=1,
+        instance_type="c4.4xlarge",
+        sagemaker_session=sagemaker_session,
+    )
+    estimator = Estimator(
+        image_uri=IMAGE_URI,
+        role=ROLE,
+        instance_count=1,
+        instance_type=instance_type_parameter,
+        rules=[],
+        sagemaker_session=sagemaker_session,
+    )
+    step1 = ProcessingStep(name="NormalProcessingStep", processor=processor)
+
+    step2 = ProcessingStep(name="finalStep1", processor=processor, is_final_step=True)
+
+    step3 = TrainingStep(
+        name="NormalTrainingStep",
+        is_final_step=False,
+        description="TrainingStep description",
+        display_name="MyTrainingStep",
+        estimator=estimator,
+    )
+    step4 = LambdaStep(
+        name="finalStep2",
+        is_final_step=True,
+        lambda_func=Lambda(
+            function_arn="arn:aws:lambda:us-west-2:123456789012:function:sagemaker_test_lambda",
+            session=sagemaker_session,
+        ),
+    )
+
+    pipeline = Pipeline(
+        name="MyPipeline",
+        parameters=[parameter],
+        steps=[step1, step2, step3, step4],
+        sagemaker_session=sagemaker_session,
+    )
+
+    assert ordered(json.loads(pipeline.definition())) == ordered(
+        {
+            "Version": "2020-12-01",
+            "Metadata": {},
+            "Parameters": [{"Name": "MyStr", "Type": "String"}],
+            "PipelineExperimentConfig": {
+                "ExperimentName": {"Get": "Execution.PipelineName"},
+                "TrialName": {"Get": "Execution.PipelineExecutionId"},
+            },
+            "Steps": [
+                {
+                    "Name": "NormalProcessingStep",
+                    "Type": "Processing",
+                    "Arguments": {
+                        "ProcessingResources": {
+                            "ClusterConfig": {
+                                "InstanceType": "c4.4xlarge",
+                                "InstanceCount": 1,
+                                "VolumeSizeInGB": 30,
+                            }
+                        },
+                        "AppSpecification": {"ImageUri": "fakeimage"},
+                        "RoleArn": "DummyRole",
+                    },
+                },
+                {
+                    "Name": "finalStep1",
+                    "Type": "Processing",
+                    "IsFinalStep": "True",
+                    "Arguments": {
+                        "ProcessingResources": {
+                            "ClusterConfig": {
+                                "InstanceType": "c4.4xlarge",
+                                "InstanceCount": 1,
+                                "VolumeSizeInGB": 30,
+                            }
+                        },
+                        "AppSpecification": {"ImageUri": "fakeimage"},
+                        "RoleArn": "DummyRole",
+                    },
+                },
+                {
+                    "Name": "NormalTrainingStep",
+                    "Type": "Training",
+                    "Arguments": {
+                        "AlgorithmSpecification": {
+                            "TrainingInputMode": "File",
+                            "TrainingImage": "fakeimage",
+                        },
+                        "OutputDataConfig": {"S3OutputPath": "s3://my-bucket/"},
+                        "StoppingCondition": {"MaxRuntimeInSeconds": 86400},
+                        "ResourceConfig": {
+                            "VolumeSizeInGB": 30,
+                            "InstanceCount": 1,
+                            "InstanceType": {"Get": "Parameters.InstanceType"},
+                        },
+                        "RoleArn": "DummyRole",
+                        "DebugHookConfig": {
+                            "S3OutputPath": "s3://my-bucket/",
+                            "CollectionConfigurations": [],
+                        },
+                        "ProfilerConfig": {
+                            "S3OutputPath": "s3://my-bucket/",
+                            "DisableProfiler": False,
+                        },
+                    },
+                    "DisplayName": "MyTrainingStep",
+                    "Description": "TrainingStep description",
+                },
+                {
+                    "Name": "finalStep2",
+                    "Type": "Lambda",
+                    "Arguments": {},
+                    "IsFinalStep": "True",
+                    "FunctionArn": "arn:aws:lambda:us-west-2:123456789012:function:sagemaker_test_lambda",
+                    "OutputParameters": [],
+                },
+            ],
+        }
+    )
+
+
+def test_final_step_in_unsupported_type():
+    with pytest.raises(TypeError) as exc_info:
+        step1 = TransformStep(name="transformStep", is_final_step=True)
+
+    assert exc_info.type == TypeError
+    assert "TransformStep.__init__() got an unexpected keyword argument 'is_final_step'" in str(
+        exc_info.value
+    )
 
 
 def test_pipeline_override_experiment_config(sagemaker_session_mock):

@@ -96,6 +96,7 @@ class Step(Entity):
                 names or `Step` or `StepCollection`, `StepOutput` instances that the current `Step`
                 depends on.
         """
+
         self.name = name
         self.display_name = display_name
         self.description = description
@@ -412,6 +413,7 @@ class TrainingStep(ConfigurableRetryStep):
         cache_config: Optional[CacheConfig] = None,
         depends_on: Optional[List[Union[str, Step, "StepCollection"]]] = None,
         retry_policies: Optional[List[RetryPolicy]] = None,
+        is_final_step: Optional[bool] = False,
     ):
         """Construct a `TrainingStep`, given an `EstimatorBase` instance.
 
@@ -445,10 +447,14 @@ class TrainingStep(ConfigurableRetryStep):
                 names or `Step` instances or `StepCollection` instances that this `TrainingStep`
                 depends on.
             retry_policies (List[RetryPolicy]):  A list of retry policies.
+            is_final_step (bool) : Whether the step is a final step. If it is, this step is going to be
+                executed at the end of the execution, after all non-final steps finish.
         """
         super(TrainingStep, self).__init__(
             name, StepTypeEnum.TRAINING, display_name, description, depends_on, retry_policies
         )
+
+        self.is_final_step = is_final_step
 
         if not (step_args is not None) ^ (estimator is not None):
             raise ValueError("Either step_args or estimator need to be given.")
@@ -547,11 +553,12 @@ class TrainingStep(ConfigurableRetryStep):
         return self._properties
 
     def to_request(self) -> RequestType:
-        """Updates the request dictionary with cache configuration."""
+        """Updates the request dictionary with cache configuration and the is_final_step parameter."""
         request_dict = super().to_request()
         if self.cache_config:
             request_dict.update(self.cache_config.config)
-
+        if self.is_final_step:
+            request_dict.update({"IsFinalStep": str(self.is_final_step)})
         return request_dict
 
     def _generate_code_upload_path(self) -> str or None:
@@ -821,6 +828,7 @@ class ProcessingStep(ConfigurableRetryStep):
         depends_on: Optional[List[Union[str, Step, "StepCollection"]]] = None,
         retry_policies: Optional[List[RetryPolicy]] = None,
         kms_key: Optional[str] = None,
+        is_final_step: Optional[bool] = False,
     ):
         """Construct a `ProcessingStep`, given a `Processor` instance.
 
@@ -880,6 +888,7 @@ class ProcessingStep(ConfigurableRetryStep):
         self._properties = Properties(
             step_name=name, step=self, shape_name="DescribeProcessingJobResponse"
         )
+        self.is_final_step = is_final_step
 
         if not self.step_args:
             # Examine why run method in `sagemaker.processing.Processor`
@@ -964,6 +973,8 @@ class ProcessingStep(ConfigurableRetryStep):
             request_dict["PropertyFiles"] = [
                 property_file.expr for property_file in self.property_files
             ]
+        if self.is_final_step:
+            request_dict.update({"IsFinalStep": str(self.is_final_step)})
         return request_dict
 
     def _generate_code_upload_path(self) -> str:

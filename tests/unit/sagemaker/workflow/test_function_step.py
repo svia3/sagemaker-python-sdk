@@ -85,6 +85,7 @@ def test_step_decorator(mock_job_settings):
         retry_policies=[retry_policy],
         instance_type="ml.m5.large",
         image_uri="test_image_uri",
+        is_final_step=True,
     )
     def sum(a, b, c, d):
         return a + b + c + d
@@ -109,6 +110,7 @@ def test_step_decorator(mock_job_settings):
     assert mock_job_settings.call_args[1]["image_uri"] == "test_image_uri"
     assert function_step._serialized_data.func is not None
     assert function_step._serialized_data.args is not None
+    assert function_step.is_final_step is True
 
 
 @patch("sagemaker.workflow.utilities._pipeline_config", MOCKED_PIPELINE_CONFIG)
